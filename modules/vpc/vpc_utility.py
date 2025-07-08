@@ -1,177 +1,58 @@
-from aws_cdk import aws_ec2 as ec2, CfnOutput
 from constructs import Construct
-from typing import Optional, Generator, List
+from imports.aws.vpc import Vpc
+from imports.aws.subnet import Subnet
+from imports.aws.internet_gateway import InternetGateway
+from imports.aws.route_table import RouteTable, RouteTableRoute
+from imports.aws.route_table_association import RouteTableAssociation
 
-class VPCConfig:
-    """
-    Represents the configuration for a VPC, including CIDR block, subnet configuration, 
-    NAT gateway count, and other optional settings.
+class VpcModule(Construct):
+    def __init__(self, scope: Construct, id: str, *, name: str, cidr_block: str, public_subnet_cidrs: list, private_subnet_cidrs: list, tags: dict = None):
+        super().__init__(scope, id)
 
-    Attributes:
-        vpc_name (str): The name of the VPC.
-        cidr (str): The CIDR block for the VPC.
-        max_azs (int): Maximum number of Availability Zones to use.
-        nat_gateways (int): Number of NAT gateways.
-        subnet_configuration (Optional[List[ec2.SubnetConfiguration]]): Custom subnet configuration.
-    """
+        self.vpc = Vpc(self, "Vpc",
+            cidr_block=cidr_block,
+            enable_dns_hostnames=True,
+            enable_dns_support=True,
+            tags={"Name": name, **(tags or {})}
+        )
 
-    def __init__(
-        self,
-        vpc_name: str,
-        cidr: str = "10.0.0.0/16",
-        max_azs: int = 2,
-        nat_gateways: int = 1,
-        subnet_configuration: Optional[List[ec2.SubnetConfiguration]] = None
-    ):
-        """
-        Initializes a VPCConfig instance.
+        self.igw = InternetGateway(self, "InternetGateway",
+            vpc_id=self.vpc.id,
+            tags={"Name": f"{name}-igw", **(tags or {})}
+        )
 
-        Args:
-            vpc_name (str): The name of the VPC.
-            cidr (str, optional): CIDR block for the VPC. Defaults to "10.0.0.0/16".
-            max_azs (int, optional): Maximum AZs to use. Defaults to 2.
-            nat_gateways (int, optional): Number of NAT gateways. Defaults to 1.
-            subnet_configuration (Optional[List[ec2.SubnetConfiguration]], optional): Custom subnets. Defaults to None.
-        """
-        self.vpc_name = vpc_name
-        self.cidr = cidr
-        self.max_azs = max_azs
-        self.nat_gateways = nat_gateways
-        self.subnet_configuration = subnet_configuration if subnet_configuration else [
-            ec2.SubnetConfiguration(name="public", subnet_type=ec2.SubnetType.PUBLIC, cidr_mask=24),
-            ec2.SubnetConfiguration(name="private", subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS, cidr_mask=24),
-        ]
+        self.public_route_table = RouteTable(self, "PublicRouteTable",
+            vpc_id=self.vpc.id,
+            route=[
+                RouteTableRoute(
+                    cidr_block="0.0.0.0/0",
+                    gateway_id=self.igw.id
+                )
+            ],
+            tags={"Name": f"{name}-public-rt", **(tags or {})}
+        )
 
-
-class VPCBlueprint:
-    """
-    Blueprint for creating multiple VPCs based on predefined configurations.
-
-    Attributes:
-        vpc_configs (list[VPCConfig]): A list of VPC configurations for defining VPCs.
-    """
-
-    def __init__(self, vpc_configs: List[VPCConfig] = []):
-        """
-        Initializes a VPCBlueprint instance.
-
-        Args:
-            vpc_configs (list[VPCConfig], optional): List of VPC configurations. Defaults to an empty list.
-        """
-        self.vpc_configs: List[VPCConfig] = vpc_configs
-    
-    def add_config(self, vpc_config: VPCConfig):
-        """
-        Adds a new VPC configuration to the blueprint.
-
-        Args:
-            vpc_config (VPCConfig): The VPC configuration to add.
-        """
-        self.vpc_configs.append(vpc_config)
-    
-    @property
-    def all_configs(self) -> Generator[VPCConfig, None, None]:
-        """
-        Generator that yields each VPC configuration in the blueprint.
-
-        Yields:
-            VPCConfig: A VPC configuration object.
-        """
-        for config in self.vpc_configs:
-            yield config
-
-
-class VPCData:
-    """
-    Wraps a VPC instance for easy access and retrieval.
-
-    Attributes:
-        vpc (ec2.Vpc): The VPC instance.
-    """
-
-    def __init__(self, vpc: ec2.Vpc):
-        """
-        Initializes a VPCData instance.
-
-        Args:
-            vpc (ec2.Vpc): The VPC to wrap.
-        """
-        self.vpc = vpc
-
-
-class VPCResources:
-    """
-    Stores and manages VPCs created from configurations.
-
-    Attributes:
-        _vpcs_dict (dict): A dictionary storing VPCs by their name.
-    """
-
-    def __init__(self):
-        """
-        Initializes a VPCResources instance.
-        """
-        self._vpcs_dict = {}
-
-    def add_vpc(self, name: str, vpc_data: VPCData):
-        """
-        Adds a VPC to the resources.
-
-        Args:
-            name (str): The name to associate with the VPC.
-            vpc_data (VPCData): The VPC data to store.
-        """
-        self._vpcs_dict[name] = vpc_data
-
-    def get_vpc(self, name: str) -> Optional[VPCData]:
-        """
-        Retrieves a VPC by its name.
-
-        Args:
-            name (str): The name of the VPC to retrieve.
-
-        Returns:
-            Optional[VPCData]: The VPC data associated with the name.
-        """
-        return self._vpcs_dict.get(name)
-
-
-class VPCUtility:
-    """
-    Utility for creating and managing VPCs based on a blueprint configuration.
-
-    Attributes:
-        resources (VPCResources): A container for storing and managing VPCs.
-    """
-
-    def __init__(self, scope: Construct, vpc_blueprint: VPCBlueprint):
-        """
-        Initializes a VPCUtility instance and creates VPCs based on the provided blueprint.
-
-        Args:
-            scope (Construct): The scope in which to define the VPCs.
-            vpc_blueprint (VPCBlueprint): The blueprint defining the VPCs to create.
-        """
-        self.resources = VPCResources()
-
-        for idx, config in enumerate(vpc_blueprint.all_configs):
-            vpc_name = config.vpc_name
-            if not vpc_name:
-                raise ValueError(f"vpc_name is a required parameter for VPC at index {idx}.")
-
-            # Create the VPC
-            vpc = ec2.Vpc(
-                scope,
-                vpc_name,
-                vpc_name=vpc_name,
-                ip_addresses=ec2.IpAddresses.cidr(config.cidr),
-                max_azs=config.max_azs,
-                nat_gateways=config.nat_gateways,
-                subnet_configuration=config.subnet_configuration,
+        self.public_subnets = []
+        for i, cidr in enumerate(public_subnet_cidrs):
+            subnet = Subnet(self, f"PublicSubnet{i}",
+                vpc_id=self.vpc.id,
+                cidr_block=cidr,
+                map_public_ip_on_launch=True,
+                availability_zone=f"us-east-1{chr(97+i)}", # Simple AZ rotation
+                tags={"Name": f"{name}-public-subnet-{i}", **(tags or {})}
             )
+            RouteTableAssociation(self, f"PublicSubnet{i}RouteTableAssociation",
+                subnet_id=subnet.id,
+                route_table_id=self.public_route_table.id
+            )
+            self.public_subnets.append(subnet)
 
-            # Store the VPC in the resources dictionary
-            self.resources.add_vpc(vpc_name, VPCData(vpc))
-
-            # Output the VPC ID
-            # CfnOutput(scope, f"{vpc_name}VPCId", value=vpc.vpc_id)
+        self.private_subnets = []
+        for i, cidr in enumerate(private_subnet_cidrs):
+            subnet = Subnet(self, f"PrivateSubnet{i}",
+                vpc_id=self.vpc.id,
+                cidr_block=cidr,
+                availability_zone=f"us-east-1{chr(97+i)}", # Simple AZ rotation
+                tags={"Name": f"{name}-private-subnet-{i}", **(tags or {})}
+            )
+            self.private_subnets.append(subnet)
